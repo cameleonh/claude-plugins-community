@@ -139,6 +139,36 @@ class HookAdapterRuntimeTests(unittest.TestCase):
             self.assertIn("JSONDecodeError", output["reason"])
             self.assertNotIn("UnboundLocalError", output["reason"])
 
+    def test_corrupt_prompt_state_is_quarantined_and_blocks_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            environment = {**os.environ, "EVIDENCE_HARNESS_DATA": str(data)}
+            session_id = "corrupt-state"
+            prompt_path = data / f"{session_id}.prompt.json"
+            prompt_path.write_bytes(b'{"profile":')
+
+            stop = run_hook(
+                "stop",
+                json.dumps(
+                    {
+                        "session_id": session_id,
+                        "last_assistant_message": "Done.",
+                    }
+                ),
+                environment,
+            )
+            output = json.loads(stop.stdout)
+            quarantines = list(data.glob(f"{prompt_path.name}.corrupt.*"))
+            regenerated = json.loads(prompt_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(stop.returncode, 0, stop.stderr)
+            self.assertEqual(output["decision"], "block")
+            self.assertIn("quarantined", output["reason"])
+            self.assertNotIn("JSONDecodeError", output["reason"])
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), b'{"profile":')
+            self.assertIs(regenerated["recovered_corrupt_state"], True)
+
     def test_scholar_bridge_hash_mismatch_blocks_stop_and_pretool(self):
         with tempfile.TemporaryDirectory() as tmp:
             temporary = Path(tmp)

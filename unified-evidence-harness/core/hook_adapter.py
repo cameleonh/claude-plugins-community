@@ -10,9 +10,17 @@ import os
 import re
 import sys
 import tempfile
+import time
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from antigravity_transcript import transcript_context, workspace_paths
 from evidence_core import classify_profile, digest, evaluate, extract_dois, extract_urls, load_jsonl
@@ -104,7 +112,55 @@ def configure_stdio() -> None:
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
-def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+@contextmanager
+def state_file_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    stream = lock_path.open("a+b")
+    locked = False
+    try:
+        if os.name == "nt":
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            locked = True
+        yield
+    finally:
+        if locked:
+            stream.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        stream.close()
+
+
+def replace_atomic(source: str, destination: Path) -> None:
+    for attempt in range(6):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 5:
+                raise
+            time.sleep(0.005 * (2**attempt))
+
+
+def write_json_unlocked(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: str | None = None
     try:
@@ -120,7 +176,7 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
             json.dump(value, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        replace_atomic(temporary, path)
         temporary = None
     finally:
         if temporary is not None:
@@ -130,16 +186,61 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
                 pass
 
 
-def load_json_object(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    with state_file_lock(path):
+        write_json_unlocked(path, value)
+
+
+def quarantine_json(path: Path, raw: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    quarantine = path.with_name(
+        f"{path.name}.corrupt.{stamp}.{uuid.uuid4().hex[:12]}"
+    )
+    temporary: str | None = None
     try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        atomic_write_json(path, default)
-        return default
-    if isinstance(value, dict):
-        return value
-    atomic_write_json(path, default)
-    return default
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{quarantine.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = stream.name
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace_atomic(temporary, quarantine)
+        temporary = None
+        return quarantine
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink()
+            except FileNotFoundError:
+                pass
+
+
+def load_json_object(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    with state_file_lock(path):
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            write_json_unlocked(path, default)
+            return default
+        try:
+            value = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            quarantine_json(path, raw)
+            recovered = {**default, "recovered_corrupt_state": True}
+            write_json_unlocked(path, recovered)
+            return recovered
+        if isinstance(value, dict):
+            return value
+        quarantine_json(path, raw)
+        recovered = {**default, "recovered_corrupt_state": True}
+        write_json_unlocked(path, recovered)
+        return recovered
 
 
 def read_payload() -> dict[str, Any]:
@@ -347,6 +448,13 @@ def main() -> int:
             else:
                 answer = str(data.get("last_assistant_message") or data.get("lastAssistantMessage") or data.get("assistant_message") or "")
                 state = load_json_object(prompt_path, {"profile": "routine"})
+                if state.get("recovered_corrupt_state") is True:
+                    output_stop(
+                        platform,
+                        False,
+                        "Unified evidence gate: prompt state was corrupt, quarantined, and regenerated; submit the prompt again.",
+                    )
+                    return 0
             ledger = {"events": load_jsonl(event_path), "claims": data.get("claims", []), "worker_receipts": data.get("worker_receipts", [])}
             scholar_project = state.get("scholar_project")
             if isinstance(scholar_project, dict) and isinstance(scholar_project.get("root"), str):

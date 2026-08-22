@@ -3,10 +3,14 @@ from __future__ import annotations
 import sys
 import unittest
 import json
+import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+RACE_WORKER = ROOT / "tests" / "state_race_worker.py"
 sys.path.insert(0, str(ROOT / "core"))
 from evidence_core import (
     NO_VERIFIABLE_EXTERNAL_QUOTES,
@@ -28,16 +32,126 @@ def event(tool="fetch", text="", ok=True, event_id="T1"):
 class HarnessTests(unittest.TestCase):
     def test_corrupt_prompt_state_is_recovered(self):
         with tempfile.TemporaryDirectory() as tmp:
+            cases = {
+                "empty": b"",
+                "partial": b'{"profile":',
+                "invalid-utf8": b"\xff\xfe\xfa",
+                "wrong-type": b"[]",
+            }
+            for name, raw in cases.items():
+                with self.subTest(name=name):
+                    path = Path(tmp) / f"{name}.prompt.json"
+                    path.write_bytes(raw)
+                    recovered = load_json_object(path, {"profile": "routine"})
+                    self.assertEqual(recovered["profile"], "routine")
+                    self.assertIs(recovered["recovered_corrupt_state"], True)
+                    self.assertEqual(
+                        json.loads(path.read_text(encoding="utf-8")),
+                        recovered,
+                    )
+                    quarantines = list(path.parent.glob(f"{path.name}.corrupt.*"))
+                    self.assertEqual(len(quarantines), 1)
+                    self.assertEqual(quarantines[0].read_bytes(), raw)
+
+    def test_missing_prompt_state_is_regenerated_without_quarantine(self):
+        with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "prompt.json"
-            path.write_bytes(b"")
-            self.assertEqual(load_json_object(path, {"profile": "routine"}), {"profile": "routine"})
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"profile": "routine"})
+            self.assertEqual(
+                load_json_object(path, {"profile": "routine"}),
+                {"profile": "routine"},
+            )
+            self.assertEqual(list(path.parent.glob("prompt.json.corrupt.*")), [])
+
+    def test_state_read_error_does_not_overwrite_existing_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "prompt.json"
+            original = '{"profile":"academic","prompt":"verified"}'
+            path.write_text(original, encoding="utf-8")
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=PermissionError("busy"),
+            ):
+                with self.assertRaises(PermissionError):
+                    load_json_object(path, {"profile": "routine"})
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(list(path.parent.glob("prompt.json.corrupt.*")), [])
 
     def test_atomic_json_write_never_leaves_partial_document(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "prompt.json"
             atomic_write_json(path, {"prompt": "verified", "profile": "academic"})
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["profile"], "academic")
+
+    def test_atomic_json_write_survives_concurrent_readers_and_writers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "prompt.json"
+            atomic_write_json(path, {"writer": -1, "iteration": -1})
+            failures: list[str] = []
+
+            def writer(worker: int) -> None:
+                for iteration in range(100):
+                    atomic_write_json(path, {"writer": worker, "iteration": iteration})
+
+            def reader() -> None:
+                for _ in range(4000):
+                    value = load_json_object(
+                        path,
+                        {"writer": -2, "iteration": -2},
+                    )
+                    if not isinstance(value, dict):
+                        failures.append("non-object")
+
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = [pool.submit(writer, worker) for worker in range(4)]
+                futures.append(pool.submit(reader))
+                for future in futures:
+                    future.result()
+
+            self.assertEqual(failures, [])
+            self.assertIsInstance(json.loads(path.read_text(encoding="utf-8")), dict)
+            self.assertEqual(list(path.parent.glob(".*.tmp")), [])
+
+    def test_atomic_json_lock_coordinates_independent_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            path = directory / "prompt.json"
+            start = directory / "start.signal"
+            atomic_write_json(path, {"writer": -1, "iteration": -1})
+            specifications = [
+                ("writer", str(worker), "100") for worker in range(4)
+            ] + [("reader", str(reader), "1200") for reader in range(2)]
+            processes = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(RACE_WORKER),
+                        mode,
+                        str(path),
+                        str(start),
+                        identity,
+                        iterations,
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                for mode, identity, iterations in specifications
+            ]
+            start.write_text("go", encoding="utf-8")
+            try:
+                for process in processes:
+                    stdout, stderr = process.communicate(timeout=30)
+                    self.assertEqual(process.returncode, 0, stdout + stderr)
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+
+            self.assertIsInstance(json.loads(path.read_text(encoding="utf-8")), dict)
+            self.assertEqual(list(path.parent.glob("prompt.json.corrupt.*")), [])
+            self.assertEqual(list(path.parent.glob(".*.tmp")), [])
 
     def test_routine_functional_comparison_does_not_require_research(self):
         self.assertTrue(evaluate("A manages context; B manages workflow.", {"events": [], "claims": []}, "routine")["allow"])

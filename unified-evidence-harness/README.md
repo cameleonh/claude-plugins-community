@@ -28,6 +28,16 @@ A supported or refuted project claim requires a current successful read event fo
 
 Codex and ZCode receive prompt and final-response content from their native hook fields. Antigravity uses its host-provided transcript only when it is inside the host artifact directory, the expected user/model records are unambiguous, and `fullyIdle` is true. Missing or malformed transcript state fails closed.
 
+## State safety
+
+Prompt and checkpoint JSON writes are serialized per state file, written to a
+temporary file, flushed, synchronized with `fsync`, and installed with an
+atomic replace. Empty, partial, invalid-UTF-8, and non-object JSON is copied to
+a uniquely named `*.corrupt.*` file before the live state is regenerated.
+Recovered corrupt prompt state remains blocking until the host submits the
+prompt again. The installer retires the legacy v3 hooks and keeps v4 as the
+single authoritative writer and validator.
+
 ## Install
 
 ```powershell

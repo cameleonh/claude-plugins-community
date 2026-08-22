@@ -10,16 +10,18 @@
     "adapters/zcode/hooks/hooks.json": "9815df95b68644e5e790d85f7dff085cc1bc34e9d6ca768794946d43792c9c93",
     "core/antigravity_transcript.py": "f7299ef62799200e0cd8eb42abfa662a43a4097ade525c2964a673b6426f74c4",
     "core/evidence_core.py": "0dc894ef2281f075171151130c9040cc1b69f630725c7f1371b3879f085b8ee3",
-    "core/hook_adapter.py": "517fef61fd8a6ed15beb2a05d9f079d2197a809dfdd3f5293296d0d89ea7c1c3",
+    "core/hook_adapter.py": "e1b5322bdd51217be7d46938c046c2b4cea9fbf5732f437c61409ba02cdfd76b",
     "core/scholar_bridge.py": "e24f56d4794bfd0e5d165c87977f18deed72cc1745b3d2759322eb77e42efbf4",
     "manifest.json": "f97d108b9b11995d52f8a0db8fc5cbe723f45e120b661bd8a594ccbe99c03dae",
     "profiles/academic-research.json": "e73ef69c49bc53828306f25fafca70aa2fc7a43f1dd1e33e4f793cae8683228d",
-    "README.md": "2ec6d832e9d1aacc2cc0b6097a851d9a33e9e34651cfde98d031b7b5e28f8fbd",
-    "scripts/build_hashes.py": "7a2004678a5772b5cf0e2014cb54d0d6171af82cd5a78e1690ee3c209c24c130",
+    "README.md": "6e605e7ac8e1b89a1e6c52af6fe11a6d000d0b2c35329327ae9b7c885ca9ceef",
+    "scripts/build_hashes.py": "49ddd01af656dc8e2c9bed3dc5c9be224ece27974683f9573bb829aed92f2a92",
     "scripts/install.ps1": "eff2492d809b1478c4b2d1b9993f15c7d131d4c776ae1658e7ee8f44936aa320",
+    "tests/state_race_worker.py": "22e45b886fd9d85873cc2066ab2ba19d133a0e1822917ea40d07afc56a18ade3",
     "tests/test_antigravity_runtime.py": "0f71b445c1cbee79d86a3607619ef04e7d91eb619cfb2f5f44604221930b6baa",
-    "tests/test_harness.py": "f770478b051c9984fa166470e65c853704088fcba391566c277647e4531d8e40",
-    "tests/test_hook_adapter_runtime.py": "de37b2a4ffd7cd24f0e2da3aeb199e5d6a730ad9b38d862631de9908751a45ba",
+    "tests/test_build_hashes.py": "1baa932d1ef898e4845b9a9b4e084dd747e6459ae71ab6d7555a721dcd70c70f",
+    "tests/test_harness.py": "4496a9bef3868c08978a4d266f0ca8e3ef31d396a50d07af4aac8ba3f332e39f",
+    "tests/test_hook_adapter_runtime.py": "a9a94670bc0eab93fc3bbaa6a092651c2df4d9cac0f8a3f7a237e1f697a2f7c5",
     "tests/test_scholar_bridge.py": "7880c797efdef3335b8c3128665b1e9dba25b3e250b10f20ef896e436b39e58f"
   }
 }

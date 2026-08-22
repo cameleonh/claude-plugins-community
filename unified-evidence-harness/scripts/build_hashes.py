@@ -10,10 +10,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
 args = parser.parse_args()
 ROOT = args.root.resolve()
-EXCLUDED = {".git", "__pycache__", "trust"}
+EXCLUDED = {
+    ".git",
+    ".mypy_cache",
+    ".omo",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "trust",
+}
 rows = {}
 for path in sorted(ROOT.rglob("*")):
-    if not path.is_file() or any(part in EXCLUDED for part in path.parts):
+    if (
+        not path.is_file()
+        or path.name == ".coverage"
+        or any(part in EXCLUDED for part in path.parts)
+    ):
         continue
     rows[path.relative_to(ROOT).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
 target = ROOT / "trust" / "hashes.json"
