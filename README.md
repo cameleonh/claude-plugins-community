@@ -29,3 +29,7 @@ Submit via **[clau.de/plugin-directory-submission](https://clau.de/plugin-direct
 
 - [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official) — Anthropic-maintained plugins
 - [anthropics/knowledge-work-plugins](https://github.com/anthropics/knowledge-work-plugins) — role-specific knowledge-work plugins
+
+## Personal fork note
+
+This fork also carries a personal cross-agent bundle for local Codex and ZCode use. It is an addition for the fork owner and is not part of the upstream marketplace inventory.
