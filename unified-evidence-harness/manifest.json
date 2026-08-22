@@ -1,0 +1,11 @@
+{
+  "name": "unified-evidence-harness",
+  "version": "4.0.0",
+  "schema_version": "4.0",
+  "platforms": ["codex", "antigravity", "zcode-glm"],
+  "default_profile": "routine",
+  "academic_profile": "academic",
+  "submission_profile": "submission",
+  "hash_manifest": "trust/hashes.json"
+}
+

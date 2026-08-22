@@ -1,0 +1,6 @@
+{
+  "name": "unified-evidence-harness",
+  "version": "4.0.0",
+  "description": "Shared evidence-bound policy and phantom-evidence hooks for ZCode and GLM."
+}
+

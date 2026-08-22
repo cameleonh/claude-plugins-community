@@ -1,0 +1,6 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "unified-evidence-harness",
+  "description": "Shared evidence-bound policy and phantom-evidence hooks for Antigravity."
+}
+

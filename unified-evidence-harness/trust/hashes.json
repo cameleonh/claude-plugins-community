@@ -1,0 +1,21 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    ".gitignore": "05a47bdfff587dac018c7a740f34026c1991fd40beee8a7ad37ac2cd62573b67",
+    "adapters/antigravity/hooks.json": "4d838275bb25631d96856bc53c9256b5864a6e45d0d6182d3693c2329a4698ee",
+    "adapters/antigravity/plugin.json": "24d4f1d5bf3a62f124db102ea6544b43538ff303c4ab8fa1b47f6ae6636168c0",
+    "adapters/codex/.codex-plugin/plugin.json": "1d7f2b9512ac1d6787ab7278f4035faf9ac6c843478e1b526f417bd921b96d5e",
+    "adapters/codex/hooks/hooks.json": "bb715f3174c3e673875975248ac1be22ac6051fe4a0e8f7c049fbc5c1f088b44",
+    "adapters/zcode/.zcode-plugin/plugin.json": "fbc71207dfed9113d8c7beb709ccecadd4539fe513e4e86bef88dfa8270eafd6",
+    "adapters/zcode/hooks/hooks.json": "9815df95b68644e5e790d85f7dff085cc1bc34e9d6ca768794946d43792c9c93",
+    "core/evidence_core.py": "9efcc1a61986881c56117dfcb995882d0a56d82a4e03443118bd449eac601e3e",
+    "core/hook_adapter.py": "e6b9ebe23abbbca4ecbffe5a489dc0dcdfaad0723f77c0556097368c1276f17c",
+    "core/scholar_bridge.py": "cc4bb2816660f2e4285d07e1bfab4bd08adeeae5f562546f957ca5c9a367e0d6",
+    "manifest.json": "f97d108b9b11995d52f8a0db8fc5cbe723f45e120b661bd8a594ccbe99c03dae",
+    "profiles/academic-research.json": "e73ef69c49bc53828306f25fafca70aa2fc7a43f1dd1e33e4f793cae8683228d",
+    "README.md": "d7b930582136c25a05253df052001e663ef3e5e409344812cbf375f8a8c7d306",
+    "scripts/build_hashes.py": "7a2004678a5772b5cf0e2014cb54d0d6171af82cd5a78e1690ee3c209c24c130",
+    "scripts/install.ps1": "0db7bbd97b6bf173e2a5f134cf5e7a0ebf76e98366723c720c448e559c9055f6",
+    "tests/test_harness.py": "73337475f55017bcb5353f2c5ab8185a2f8387deff1d42067d1933c2f0b669cd"
+  }
+}

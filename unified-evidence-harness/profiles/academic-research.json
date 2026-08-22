@@ -1,0 +1,14 @@
+{
+  "profile": "academic",
+  "scholar2agent": {
+    "canonical_state_only": true,
+    "recognized_state_files": ["AGENTS.md", "SCHOLAR_PROFILE.json", "START_HERE.md", "WBS.md", "FILES.md", "DECISIONS.md", "RESEARCH_LOG.md", "RESEARCH_ROADMAP.md"],
+    "submission_profile": "submission"
+  },
+  "requirements": ["source_identity", "source_access", "attribution", "claim_support", "result_artifact", "action_receipt"]
+  ,"worker_receipt": {
+    "accepted_schema": "scholar2agent-worker-receipt-v1",
+    "conflict_policy": "block-supported-versus-refuted-at-submission",
+    "council_compatible": true
+  }
+}

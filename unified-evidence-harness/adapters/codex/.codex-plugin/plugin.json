@@ -1,0 +1,15 @@
+{
+  "name": "unified-evidence-harness",
+  "version": "4.0.0",
+  "description": "Shared evidence-bound policy and phantom-evidence hooks for Codex.",
+  "author": {"name": "cameleonh"},
+  "interface": {
+    "displayName": "Unified Evidence Harness",
+    "shortDescription": "Proportional evidence and artifact integrity gates",
+    "longDescription": "Runs one shared evidence evaluator across Codex, Antigravity, and ZCode while applying proportional research, academic, action, artifact, and submission gates.",
+    "developerName": "cameleonh",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Interactive"],
+    "defaultPrompt": ["Apply the proportional evidence profile for this task"]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "description": "Unified Evidence Harness v4 for ZCode/GLM",
+  "hooks": {
+    "SessionStart": [{"matcher": "startup|clear|compact", "hooks": [{"type": "process", "command": "python", "args": ["${ZCODE_PLUGIN_ROOT}/hooks/hook_adapter.py", "--platform", "zcode", "--event", "session-start"], "timeoutMs": 10000}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "process", "command": "python", "args": ["${ZCODE_PLUGIN_ROOT}/hooks/hook_adapter.py", "--platform", "zcode", "--event", "user-prompt"], "timeoutMs": 10000}]}],
+    "PreToolUse": [{"matcher": "Write|Edit|MultiEdit|Bash|NotebookEdit", "hooks": [{"type": "process", "command": "python", "args": ["${ZCODE_PLUGIN_ROOT}/hooks/hook_adapter.py", "--platform", "zcode", "--event", "pre-tool"], "timeoutMs": 10000}]}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "process", "command": "python", "args": ["${ZCODE_PLUGIN_ROOT}/hooks/hook_adapter.py", "--platform", "zcode", "--event", "post-tool"], "timeoutMs": 15000}]}],
+    "PostToolUseFailure": [{"matcher": "*", "hooks": [{"type": "process", "command": "python", "args": ["${ZCODE_PLUGIN_ROOT}/hooks/hook_adapter.py", "--platform", "zcode", "--event", "post-tool-failure"], "timeoutMs": 10000}]}],
+    "Stop": [{"hooks": [{"type": "process", "command": "python", "args": ["${ZCODE_PLUGIN_ROOT}/hooks/hook_adapter.py", "--platform", "zcode", "--event", "stop"], "timeoutMs": 20000}]}]
+  }
+}
+
