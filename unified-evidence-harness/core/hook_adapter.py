@@ -9,16 +9,24 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from antigravity_transcript import transcript_context, workspace_paths
 from evidence_core import classify_profile, digest, evaluate, extract_dois, extract_urls, load_jsonl
-from scholar_bridge import find_project_root, harness_profile, project_snapshot
+from scholar_bridge import find_project_root, harness_profile, merge_project_evidence, project_snapshot
 
 SECRET_RE = re.compile(r"token|secret|password|cookie|authorization|api.?key", re.I)
 MUTATION_RE = re.compile(r"remove-item|rmdir|set-content|out-file|write_text|unlink\(|rmtree|apply_patch", re.I)
-PROTECTED_RE = re.compile(r"evidence[-_ ]harness|evidence-bound|hashes\.json", re.I)
+HARNESS_ROOT_NAMES = {"unified-evidence-harness", "codex-evidence-harness"}
+TARGET_PATH_KEYS = (
+    "file_path", "filePath", "path", "target_path", "targetPath", "TargetFile", "targetFile",
+    "file", "filename", "fileName", "notebook_path", "notebookPath", "destination", "dest", "dst",
+    "AbsolutePath",
+)
+PATCH_FILE_RE = re.compile(r"\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(\S+)", re.I)
 
 
 def verify_runtime_hashes() -> bool:
@@ -29,7 +37,12 @@ def verify_runtime_hashes() -> bool:
         return False
     try:
         expected = json.loads(manifest.read_text(encoding="utf-8")).get("files", {})
-        for path in (script, script.with_name("evidence_core.py")):
+        for path in (
+            script,
+            script.with_name("antigravity_transcript.py"),
+            script.with_name("evidence_core.py"),
+            script.with_name("scholar_bridge.py"),
+        ):
             relative = path.relative_to(root).as_posix()
             if expected.get(relative) != hashlib.sha256(path.read_bytes()).hexdigest():
                 return False
@@ -38,8 +51,95 @@ def verify_runtime_hashes() -> bool:
         return False
 
 
+def is_protected_target(raw: str) -> bool:
+    """True only when the operation target is harness source or a trust manifest."""
+    segments = [seg for seg in re.split(r"[\\/]+", raw.strip().strip("\"'`")) if seg]
+    if not segments:
+        return False
+    lowered = [seg.casefold() for seg in segments]
+    if "hashes.json" in lowered and "trust" in lowered:
+        return True
+    return any(seg in HARNESS_ROOT_NAMES for seg in lowered)
+
+
+def integrity_decision(name: str, tool_input: Any, text: str, cwd: str) -> bool:
+    """Decide harness-integrity blocking from operation target paths only.
+
+    File CONTENT is never scanned: a research note that merely mentions
+    harness vocabulary or paths must stay writable. Blocking applies when the
+    declared target (tool path field, patch file header, or a path token in a
+    shell mutation command) resolves into a harness root or trust manifest.
+    """
+    write_tool = any(x in name.casefold() for x in ("write", "edit", "patch", "replace"))
+    targets: list[str] = []
+    if isinstance(tool_input, dict):
+        targets = [str(tool_input[key]) for key in TARGET_PATH_KEYS if isinstance(tool_input.get(key), str)]
+    if any(is_protected_target(target) for target in targets):
+        return True
+    if write_tool and isinstance(tool_input, dict):
+        for key in ("input", "patch", "diff"):
+            value = tool_input.get(key)
+            if isinstance(value, str):
+                targets.extend(match.group(1) for match in PATCH_FILE_RE.finditer(value))
+        for target in targets:
+            if is_protected_target(target) or is_protected_target(str(Path(cwd) / target)):
+                return True
+    if not write_tool and MUTATION_RE.search(text):
+        for token in text.split():
+            token = token.strip("\"'`();&|<>")
+            if "/" not in token and "\\" not in token:
+                continue
+            if is_protected_target(token) or is_protected_target(str(Path(cwd) / token)):
+                return True
+    return False
+
+
 def emit(value: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(value, ensure_ascii=False))
+    sys.stdout.write(json.dumps(value, ensure_ascii=True))
+
+
+def configure_stdio() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = stream.name
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                Path(temporary).unlink()
+            except FileNotFoundError:
+                pass
+
+
+def load_json_object(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        atomic_write_json(path, default)
+        return default
+    if isinstance(value, dict):
+        return value
+    atomic_write_json(path, default)
+    return default
 
 
 def read_payload() -> dict[str, Any]:
@@ -127,8 +227,8 @@ def append_event(platform: str, data: dict[str, Any], forced_ok: bool | None = N
     ok = forced_ok if forced_ok is not None else not bool(error)
     mapped = map_tool(name, input_text, output_text)
     artifacts = []
-    if ok and mapped == "write" and isinstance(tool_input, dict):
-        for key in ("file_path", "filePath", "path", "TargetFile", "targetFile"):
+    if ok and isinstance(tool_input, dict):
+        for key in TARGET_PATH_KEYS:
             if tool_input.get(key):
                 artifacts.append(str(tool_input[key]))
     record = {
@@ -167,14 +267,38 @@ def output_stop(platform: str, allow: bool, reason: str = "") -> None:
         emit({"decision": "block", "reason": reason})
 
 
+def build_prompt_state(platform: str, data: dict[str, Any], prompt: str) -> dict[str, Any]:
+    configured = os.environ.get("EVIDENCE_HARNESS_PROFILE", "routine")
+    candidates = (
+        workspace_paths(data)
+        if platform == "antigravity"
+        else [Path(str(data.get("cwd") or os.getcwd()))]
+    )
+    project_root = next(
+        (root for candidate in candidates if (root := find_project_root(candidate)) is not None),
+        None,
+    )
+    if project_root is not None:
+        configured = harness_profile(project_root, prompt)
+    state: dict[str, Any] = {
+        "prompt": prompt,
+        "profile": classify_profile(prompt, configured),
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    if project_root is not None:
+        state["scholar_project"] = project_snapshot(project_root)
+    return state
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", choices=("codex", "antigravity", "zcode"), required=True)
     parser.add_argument("--event", required=True)
     args = parser.parse_args()
-    data = read_payload()
     platform, event = args.platform, args.event
     try:
+        configure_stdio()
+        data = read_payload()
         if not verify_runtime_hashes():
             if event == "stop":
                 output_stop(platform, False, "Unified evidence gate: runtime trust hash mismatch or missing registration.")
@@ -184,39 +308,53 @@ def main() -> int:
                 emit({})
             return 0
         event_path, prompt_path, checkpoint_path = paths(platform, data)
-        if event in {"session-start", "pre-invocation"}:
+        if event == "session-start":
             output_context(platform, "SessionStart", "Unified Evidence Harness v4 is active. Enforcement is proportional: routine work checks actions; research and academic work also require inspected source evidence.")
-        elif event == "user-prompt":
-            prompt = str(data.get("prompt", ""))
-            configured = os.environ.get("EVIDENCE_HARNESS_PROFILE", "routine")
-            cwd = Path(str(data.get("cwd") or os.getcwd()))
-            project_root = find_project_root(cwd)
-            if project_root is not None:
-                configured = harness_profile(project_root, prompt)
-            state = {"prompt": prompt, "profile": classify_profile(prompt, configured), "time": datetime.now(timezone.utc).isoformat()}
-            if project_root is not None:
-                state["scholar_project"] = project_snapshot(project_root)
-            prompt_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        elif event in {"user-prompt", "pre-invocation"}:
+            prompt = (
+                transcript_context(data)[0]
+                if platform == "antigravity"
+                else str(data.get("prompt", ""))
+            )
+            state = build_prompt_state(platform, data, prompt or "")
+            atomic_write_json(prompt_path, state)
             output_context(platform, "UserPromptSubmit", f"Evidence profile: {state['profile']}.")
         elif event == "pre-tool":
             name, tool_input, _, _ = tool_fields(platform, data)
             text = "\n".join(flatten(tool_input))
-            mutation = bool(MUTATION_RE.search(text)) or any(x in name.casefold() for x in ("write", "edit", "patch", "replace"))
-            output_pretool(platform, not (mutation and PROTECTED_RE.search(text)), "Harness integrity check.")
+            cwd = str(data.get("cwd") or os.getcwd())
+            output_pretool(platform, not integrity_decision(name, tool_input, text, cwd), "Harness integrity check.")
         elif event in {"post-tool", "post-tool-failure"}:
             append_event(platform, data, event == "post-tool")
             emit({})
         elif event in {"pre-compact", "compact"}:
-            state = json.loads(prompt_path.read_text(encoding="utf-8")) if prompt_path.exists() else {"profile": "routine"}
+            state = load_json_object(prompt_path, {"profile": "routine"})
             checkpoint = {"schema_version": "4.0", "profile": state.get("profile", "routine"), "event_ids": [x.get("id") for x in load_jsonl(event_path)], "scholar_project": state.get("scholar_project"), "time": datetime.now(timezone.utc).isoformat()}
-            checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_json(checkpoint_path, checkpoint)
             output_context(platform, "PreCompact", "Evidence checkpoint preserved outside conversation history; compaction does not promote remembered content into evidence.")
         elif event == "stop":
-            answer = str(data.get("last_assistant_message") or data.get("lastAssistantMessage") or data.get("assistant_message") or "")
-            state = json.loads(prompt_path.read_text(encoding="utf-8")) if prompt_path.exists() else {"profile": "routine"}
-            report = evaluate(answer, {"events": load_jsonl(event_path), "claims": data.get("claims", []), "worker_receipts": data.get("worker_receipts", [])}, str(state.get("profile", "routine")))
+            if platform == "antigravity":
+                if data.get("fullyIdle") is not True:
+                    output_stop(platform, False, "Unified evidence gate: Antigravity is not fully idle.")
+                    return 0
+                prompt, transcript_answer = transcript_context(data)
+                if prompt is None or transcript_answer is None:
+                    output_stop(platform, False, "Unified evidence gate: Antigravity transcript is unavailable or ambiguous.")
+                    return 0
+                answer = transcript_answer
+                state = build_prompt_state(platform, data, prompt)
+                atomic_write_json(prompt_path, state)
+            else:
+                answer = str(data.get("last_assistant_message") or data.get("lastAssistantMessage") or data.get("assistant_message") or "")
+                state = load_json_object(prompt_path, {"profile": "routine"})
+            ledger = {"events": load_jsonl(event_path), "claims": data.get("claims", []), "worker_receipts": data.get("worker_receipts", [])}
+            scholar_project = state.get("scholar_project")
+            if isinstance(scholar_project, dict) and isinstance(scholar_project.get("root"), str):
+                ledger = merge_project_evidence(Path(scholar_project["root"]), ledger)
+            report = evaluate(answer, ledger, str(state.get("profile", "routine")))
             codes = sorted({x["code"] for x in report["findings"]})
-            reason = f"Unified evidence gate [{digest(answer)}]: {', '.join(codes)}. Gather inspected evidence or state uncertainty."
+            details = "; ".join(x["message"] for x in report["findings"] if x.get("message"))
+            reason = f"Unified evidence gate [{digest(answer)}]: {', '.join(codes)}. {details} Gather inspected evidence or state uncertainty."
             output_stop(platform, bool(report["allow"]), reason)
         else:
             emit({})

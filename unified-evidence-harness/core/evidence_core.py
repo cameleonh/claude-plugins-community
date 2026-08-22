@@ -9,10 +9,33 @@ import re
 from pathlib import Path
 from typing import Any
 
-URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+URL_RE = re.compile(r"https?://[^\s<>\"'\\]+", re.I)
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 QUOTE_RE = re.compile(r'(?<!\w)[\"“]([^\"”\n]{12,500})[\"”]')
-PATH_RE = re.compile(r"(?:[A-Za-z]:\\|/)[^\r\n<>|*?\"]+")
+DRIVE_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|*?\"'`]+")
+UNC_PATH_RE = re.compile(r"\\\\[A-Za-z0-9_.\-]+\\[^\s<>|*?\"'`]+")
+RELATIVE_PATH_RE = re.compile(
+    r"(?<![\w./\\-])(?:\.{1,2}[\\/])?(?:[A-Za-z0-9_][A-Za-z0-9_.\-]*[\\/])+"
+    r"[A-Za-z0-9_][A-Za-z0-9_.\-]*\.[A-Za-z][A-Za-z0-9]{0,11}(?![\w.])"
+)
+PROSE_QUOTE_RE = re.compile(r"“[^”\n]+”")
+EXAMPLE_CONTEXT_RE = re.compile(
+    r"예시|예문|예제|예를 들어|샘플|템플릿|프롬프트|지시문|지시어|지침|요청문|용어집|문구|표현|"
+    r"for example|e\.g\.|such as|example|template|prompt|instruction|glossary",
+    re.I,
+)
+CITATION_CONTEXT_RE = re.compile(
+    r"10\.\d{4,9}/|https?://|www\.|arxiv|doi|"
+    r"et\s+al\.?|according\s+to|"
+    r"[A-Za-z][A-Za-z'’\-]*\s*\(\s*(?:19|20)\d{2}\s*\)|"
+    r"[A-Za-z][A-Za-z'’\-]*,\s*(?:19|20)\d{2}|"
+    r"[가-힣]{1,4}\s*\(\s*(?:19|20)\d{2}\s*\)|"
+    r"저자|연구자|출처|인용|참고문헌|각주|재인용|주장했|주장한|말했|강조했|지적했|"
+    r"citation|reference|bibliography|source:|"
+    r"\"(?:citation|source|evidence|quote)\"\s*:",
+    re.I,
+)
+NO_VERIFIABLE_EXTERNAL_QUOTES = "외부 출처가 연결된 검증 대상 인용문 없음"
 MATERIAL_RE = re.compile(
     r"verified|confirmed|research shows|study found|according to|current|latest|tested|saved|written|downloaded|"
     r"검증|확인|연구에 따르면|논문|인용|최신|테스트|저장|작성|다운로드",
@@ -30,7 +53,52 @@ WRITE_TOOLS = {"write", "download", "upload", "command"}
 
 
 def clean_url(value: str) -> str:
-    return value.rstrip(".,;:!?)]}")
+    value = value.replace("\\r", "").replace("\\n", "").replace("\\t", "")
+    return value.rstrip("\\.,;:!?)]}")
+
+
+def is_explanatory_quote(response: str, start: int, end: int) -> bool:
+    window = response[max(0, start - 80): end + 40]
+    return bool(re.search(
+        r"제목|논문명|용어|표현|라벨|이름|상태|표시|문구|코드|label|title|term|status",
+        window,
+        re.I,
+    ))
+
+
+def quote_window(response: str, start: int, end: int) -> str:
+    return response[max(0, start - 120): end + 120]
+
+
+def plain_window(response: str, start: int, end: int) -> str:
+    """Window with URLs removed, so domain tokens (example.org) cannot
+    masquerade as example-context markers."""
+    return URL_RE.sub(" ", quote_window(response, start, end))
+
+
+def has_external_citation_context(response: str, start: int, end: int) -> bool:
+    """True when an external source is linked near the quoted span."""
+    return bool(CITATION_CONTEXT_RE.search(quote_window(response, start, end)))
+
+
+def is_user_example_quote(response: str, start: int, end: int) -> bool:
+    """True for example/instructional quotes with no external source claim.
+
+    User-request examples, prompt templates, glossary entries, and other
+    didactic quoting are not external citations. An explicit example marker
+    wins over stray citation tokens nearby; without one, a quote is an
+    example unless external citation context is attached.
+    """
+    if EXAMPLE_CONTEXT_RE.search(plain_window(response, start, end)):
+        return True
+    return not has_external_citation_context(response, start, end)
+
+
+def is_verifiable_external_quote(response: str, start: int, end: int) -> bool:
+    """True for quotes attributed to an external source that must be verified."""
+    if is_explanatory_quote(response, start, end) or is_user_example_quote(response, start, end):
+        return False
+    return has_external_citation_context(response, start, end)
 
 
 def clean_doi(value: str) -> str:
@@ -47,6 +115,32 @@ def extract_urls(value: str) -> set[str]:
 
 def extract_dois(value: str) -> set[str]:
     return {clean_doi(x) for x in DOI_RE.findall(value)}
+
+
+def extract_artifact_candidates(value: str) -> set[str]:
+    """Return path-shaped artifact candidates from prose.
+
+    Only drive paths, UNC paths, and project-relative file paths count as
+    artifact references. Prose separators (Korean phrases, markdown emphasis,
+    backtick descriptions, typographic quotations, URLs, DOIs) are never
+    artifact claims.
+    """
+    stripped = PROSE_QUOTE_RE.sub(" ", DOI_RE.sub(" ", URL_RE.sub(" ", value)))
+    found: set[str] = set()
+    for regex in (DRIVE_PATH_RE, UNC_PATH_RE, RELATIVE_PATH_RE):
+        for raw in regex.findall(stripped):
+            candidate = raw.strip().strip("\"'`").rstrip(".,;:!?)").rstrip("\\/")
+            if len(candidate) > 1:
+                found.add(candidate)
+    return found
+
+
+def artifact_path_exists(path: str) -> bool:
+    candidates = [Path(path)]
+    mapped = re.fullmatch(r"/([A-Za-z])/(.+)", path)
+    if mapped:
+        candidates.append(Path(f"{mapped.group(1).upper()}:/{mapped.group(2)}"))
+    return any(candidate.exists() for candidate in candidates)
 
 
 def classify_profile(prompt: str, configured: str = "routine") -> str:
@@ -80,15 +174,24 @@ def evaluate(response: str, ledger: dict[str, Any], profile: str = "routine") ->
     def block(code: str, message: str) -> None:
         findings.append({"severity": "blocking", "code": code, "message": message})
 
+    quote_gate: str | None = None
     level = PROFILES.get(profile, 0)
     if level >= 1:
         for url in sorted(extract_urls(response) - observed_urls):
             block("P001_UNOBSERVED_URL", f"URL lacks successful inspected output: {url}")
         for doi in sorted(extract_dois(response) - observed_dois):
             block("P002_UNOBSERVED_DOI", f"DOI lacks successful inspected output: {doi}")
-        for quote in QUOTE_RE.findall(response):
+        quotes = list(QUOTE_RE.finditer(response))
+        verifiable_quotes = 0
+        for match in quotes:
+            if not is_verifiable_external_quote(response, match.start(), match.end()):
+                continue
+            verifiable_quotes += 1
+            quote = match.group(1)
             if normalized(quote) not in normalized(source_text):
                 block("P003_UNSUPPORTED_QUOTE", "Quotation was not found in inspected output.")
+        if quotes and verifiable_quotes == 0:
+            quote_gate = NO_VERIFIABLE_EXTERNAL_QUOTES
         if RESEARCH_RE.search(response) and not any(_observed(x) and x.get("tool") in RESEARCH_TOOLS for x in events):
             block("P004_UNEVIDENCED_RESEARCH", "Research claim lacks a successful research event.")
 
@@ -96,9 +199,8 @@ def evaluate(response: str, ledger: dict[str, Any], profile: str = "routine") ->
         has_run = any(_observed(x) and x.get("tool") in RUN_TOOLS | WRITE_TOOLS for x in events)
         if not has_run and not UNCERTAINTY_RE.search(response):
             block("P005_UNEVIDENCED_ACTION", "Completion claim lacks a successful action event.")
-        for raw in PATH_RE.findall(response):
-            path = raw.strip().rstrip(".,;:!?) ]")
-            if normalized(path) not in artifacts and not Path(path).exists():
+        for path in sorted(extract_artifact_candidates(response)):
+            if normalized(path) not in artifacts and not artifact_path_exists(path):
                 block("P007_MISSING_ARTIFACT", f"Claimed artifact does not exist: {path}")
 
     if level >= 2 and MATERIAL_RE.search(response) and not UNCERTAINTY_RE.search(response):
@@ -152,6 +254,7 @@ def evaluate(response: str, ledger: dict[str, Any], profile: str = "routine") ->
         "schema_version": "4.0",
         "profile": profile,
         "allow": not findings,
+        "quote_gate": quote_gate,
         "counts": {"events": len(events), "observed": len(observed), "claims": len(claims), "worker_receipts": len(receipts), "blocking": len(findings)},
         "findings": findings,
     }
